@@ -1,0 +1,142 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>Chat with AI</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      padding: 20px;
+      max-width: 600px;
+      margin: auto;
+      transition: background-color 0.3s, color 0.3s;
+    }
+
+    #chatbox {
+      border: 1px solid #ccc;
+      padding: 10px;
+      height: 300px;
+      overflow-y: scroll;
+      margin-bottom: 10px;
+      background-color: #f9f9f9;
+    }
+
+    .user {
+      color: blue;
+      margin-bottom: 5px;
+    }
+
+    .bot {
+      color: green;
+      margin-bottom: 10px;
+    }
+
+    body.dark {
+      background-color: #121212;
+      color: #f0f0f0;
+    }
+
+    body.dark #chatbox {
+      background-color: #1e1e1e;
+      border-color: #555;
+    }
+
+    body.dark input {
+      background-color: #2c2c2c;
+      color: white;
+      border: 1px solid #777;
+    }
+
+    #controls {
+      display: flex;
+      gap: 10px;
+      margin-bottom: 10px;
+    }
+  </style>
+</head>
+<body onload="initializePage()">
+
+<h2>Chat with AI</h2>
+
+<div id="controls">
+  <button onclick="toggleDarkMode()">Toggle Dark Mode</button>
+  <button onclick="clearChat()">Clear Chat</button>
+</div>
+
+<div id="chatbox"></div>
+
+<input type="text" id="messageInput" placeholder="Type your message..." style="width: 80%;">
+<button onclick="sendMessage()">Send</button>
+
+<script>
+  let username = "";
+  const sessionId = "frontendSession1";
+  const chatbox = document.getElementById("chatbox");
+
+  function initializePage() {
+    askUsername();
+    loadChat();
+    if (localStorage.getItem("darkMode") === "enabled") {
+      document.body.classList.add("dark");
+    }
+  }
+
+  function askUsername() {
+    const savedName = localStorage.getItem("username");
+    if (savedName) {
+      username = savedName;
+    } else {
+      username = prompt("Please, enter your name:") || "Guest";
+      localStorage.setItem("username", username);
+    }
+  }
+
+  function toggleDarkMode() {
+    document.body.classList.toggle("dark");
+    const isDark = document.body.classList.contains("dark");
+    localStorage.setItem("darkMode", isDark ? "enabled" : "disabled");
+  }
+
+  function saveChat() {
+    localStorage.setItem("chatHistory", chatbox.innerHTML);
+  }
+
+  function loadChat() {
+    const saved = localStorage.getItem("chatHistory");
+    if (saved) chatbox.innerHTML = saved;
+  }
+
+  function clearChat() {
+    chatbox.innerHTML = "";
+    saveChat();
+  }
+
+  async function sendMessage() {
+    const input = document.getElementById("messageInput");
+    const message = input.value.trim();
+    if (!message) return;
+
+    chatbox.innerHTML += `<div class="user"><strong>${username}:</strong> ${message}</div>`;
+    input.value = "";
+    saveChat();
+
+    try {
+      const res = await fetch("/chat", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ session_id: sessionId, message: message })
+      });
+
+      const data = await res.json();
+      chatbox.innerHTML += `<div class="bot"><strong>AI:</strong> ${data.response}</div>`;
+      chatbox.scrollTop = chatbox.scrollHeight;
+      saveChat();
+    } catch (err) {
+      chatbox.innerHTML += `<div class="bot"><strong>Error:</strong> ${err.message}</div>`;
+      saveChat();
+    }
+  }
+</script>
+
+</body>
+</html>
