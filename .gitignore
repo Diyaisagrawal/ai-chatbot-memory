@@ -19,3 +19,6 @@ data/
 # OS files
 .DS_Store
 Thumbs.db
+
+# Auth
+.secret_key

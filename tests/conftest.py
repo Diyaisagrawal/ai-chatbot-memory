@@ -11,6 +11,7 @@ def settings(tmp_path) -> Settings:
         database_url=f"sqlite:///{tmp_path / 'test.db'}",
         llm_provider="fake",
         memory_window=6,
+        jwt_secret="test-secret-that-is-long-enough-for-hs256",
     )
 
 
@@ -20,10 +21,16 @@ def client(settings):
         yield c
 
 
+PASSWORD = "correct-horse-42"
+
+
 def make_user(client: TestClient, name: str) -> dict:
-    r = client.post("/api/users", json={"username": name})
-    assert r.status_code in (200, 201), r.text
-    return {"X-User-Id": r.json()["id"]}
+    r = client.post(
+        "/api/auth/register",
+        json={"name": name, "email": f"{name.lower()}@example.com", "password": PASSWORD},
+    )
+    assert r.status_code == 201, r.text
+    return {"Authorization": f"Bearer {r.json()['access_token']}"}
 
 
 def make_session(client: TestClient, headers: dict, persona: str = "assistant") -> str:

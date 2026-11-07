@@ -13,6 +13,7 @@ from app.chain import ChatService
 from app.config import Settings, get_settings
 from app.db import Database
 from app.llm.provider import build_llm
+from app.security import TokenService, resolve_secret
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -27,6 +28,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         db = Database(settings.database_url)
         db.create_all()
         app.state.db = db
+        app.state.tokens = TokenService(resolve_secret(settings), settings.token_ttl_hours)
         app.state.chat_service = ChatService(
             llm=build_llm(settings),
             session_factory=db.SessionLocal,
@@ -35,7 +37,7 @@ def create_app(settings: Settings | None = None) -> FastAPI:
         logging.getLogger(__name__).info(
             "Started with provider=%s model=%s",
             settings.llm_provider,
-            settings.hf_model_id if settings.llm_provider == "hf_endpoint" else settings.hf_local_model_id,
+            settings.hf_model_ids if settings.llm_provider == "hf_endpoint" else settings.hf_local_model_id,
         )
         yield
         db.engine.dispose()

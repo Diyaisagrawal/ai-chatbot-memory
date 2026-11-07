@@ -1,48 +1,89 @@
-"""REST endpoints for users, sessions, history and chat."""
+"""REST endpoints for auth, sessions, history and chat."""
 
 import json
 import logging
 
-from fastapi import APIRouter, Depends, HTTPException, Response, status
+from fastapi import APIRouter, Depends, HTTPException, status
 from fastapi.responses import StreamingResponse
-from sqlalchemy import select
+from sqlalchemy import func, select
 from sqlalchemy.orm import Session as DBSession
 
-from app.api.deps import get_chat_service, get_current_user, get_db, get_owned_session
+from app.api.deps import (
+    get_chat_service,
+    get_current_user,
+    get_db,
+    get_owned_session,
+    get_token_service,
+)
 from app.chain import ChatService
 from app.db import ChatSession, Message, User
 from app.prompts import PERSONAS
 from app.schemas import (
     ChatRequest,
     ChatResponse,
+    LoginRequest,
     MessageOut,
+    RegisterRequest,
     SessionCreate,
     SessionOut,
     SessionUpdate,
-    UserCreate,
+    TokenResponse,
     UserOut,
 )
+from app.security import TokenService, hash_password, verify_password
 
 log = logging.getLogger(__name__)
 router = APIRouter(prefix="/api")
 
-
-# --- Users ---------------------------------------------------------------------
-
-@router.post("/users", response_model=UserOut, tags=["users"])
-def create_or_get_user(body: UserCreate, response: Response, db: DBSession = Depends(get_db)):
-    """Idempotent sign-in: returns the existing user for a username or creates one."""
-    username = body.username.strip()
-    user = db.scalar(select(User).where(User.username == username))
-    if user is None:
-        user = User(username=username)
-        db.add(user)
-        db.commit()
-        response.status_code = status.HTTP_201_CREATED
-    return user
+# Compared against when the email doesn't exist, so response time doesn't reveal
+# which emails are registered.
+_DUMMY_HASH = hash_password("not-a-real-password")
 
 
-@router.get("/users/me", response_model=UserOut, tags=["users"])
+def llm_error_message(exc: Exception) -> str:
+    text = str(exc)
+    if "not supported by any provider" in text or "model_not_supported" in text:
+        return (
+            "None of the configured models are available from the Hugging Face providers you "
+            "have enabled. Set HF_MODEL_ID in .env to a model listed at "
+            "https://huggingface.co/models?inference_provider=all&pipeline_tag=text-generation "
+            "or enable more providers at https://huggingface.co/settings/inference-providers"
+        )
+    if "401" in text or "403" in text or "Unauthorized" in text:
+        return "Hugging Face rejected the token. Check HF_TOKEN has the 'Make calls to Inference Providers' permission."
+    return f"LLM error: {text}"
+
+
+# --- Auth ----------------------------------------------------------------------
+
+@router.post("/auth/register", response_model=TokenResponse, status_code=201, tags=["auth"])
+def register(
+    body: RegisterRequest,
+    db: DBSession = Depends(get_db),
+    tokens: TokenService = Depends(get_token_service),
+):
+    email = body.email.lower()
+    if db.scalar(select(User).where(func.lower(User.email) == email)):
+        raise HTTPException(status.HTTP_409_CONFLICT, "An account with this email already exists")
+    user = User(email=email, name=body.name, password_hash=hash_password(body.password))
+    db.add(user)
+    db.commit()
+    return TokenResponse(access_token=tokens.create(user.id), user=UserOut.model_validate(user))
+
+
+@router.post("/auth/login", response_model=TokenResponse, tags=["auth"])
+def login(
+    body: LoginRequest,
+    db: DBSession = Depends(get_db),
+    tokens: TokenService = Depends(get_token_service),
+):
+    user = db.scalar(select(User).where(func.lower(User.email) == body.email.lower()))
+    if not verify_password(body.password, user.password_hash if user else _DUMMY_HASH) or user is None:
+        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Incorrect email or password")
+    return TokenResponse(access_token=tokens.create(user.id), user=UserOut.model_validate(user))
+
+
+@router.get("/auth/me", response_model=UserOut, tags=["auth"])
 def me(user: User = Depends(get_current_user)):
     return user
 
@@ -119,10 +160,10 @@ async def chat(
 ):
     chat_session = get_owned_session(body.session_id, user, db)
     try:
-        reply = await service.respond(chat_session.id, body.message, user.username, chat_session.persona)
+        reply = await service.respond(chat_session.id, body.message, user.name, chat_session.persona)
     except Exception as exc:  # upstream LLM errors -> 502, not a stack trace
         log.exception("LLM call failed")
-        raise HTTPException(status.HTTP_502_BAD_GATEWAY, f"LLM error: {exc}") from exc
+        raise HTTPException(status.HTTP_502_BAD_GATEWAY, llm_error_message(exc)) from exc
     return ChatResponse(session_id=chat_session.id, reply=reply)
 
 
@@ -135,7 +176,7 @@ async def chat_stream(
 ):
     """Server-Sent Events: `data: {"token": "..."}` per chunk, then `data: {"done": true}`."""
     chat_session = get_owned_session(body.session_id, user, db)
-    session_id, persona, username = chat_session.id, chat_session.persona, user.username
+    session_id, persona, username = chat_session.id, chat_session.persona, user.name
 
     async def events():
         try:
@@ -145,7 +186,7 @@ async def chat_stream(
             yield f"data: {json.dumps({'done': True})}\n\n"
         except Exception as exc:
             log.exception("LLM stream failed")
-            yield f"data: {json.dumps({'error': str(exc)})}\n\n"
+            yield f"data: {json.dumps({'error': llm_error_message(exc)})}\n\n"
 
     return StreamingResponse(
         events(),

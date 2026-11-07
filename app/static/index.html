@@ -63,6 +63,12 @@
   #login.show { display: flex; }
   #login form { background: var(--panel); padding: 24px; border-radius: 14px; width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 12px; }
   #login input { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); }
+  #login label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--muted); }
+  #login .tabs { display: grid; grid-template-columns: 1fr 1fr; gap: 4px; background: var(--bg); padding: 4px; border-radius: 10px; }
+  #login .tabs button { border: 0; background: none; }
+  #login .tabs button.on { background: var(--panel); box-shadow: 0 1px 2px rgba(0,0,0,.15); font-weight: 600; }
+  #authError { color: #dc2626; font-size: 13px; min-height: 1em; }
+  .hidden { display: none !important; }
 
   @media (max-width: 760px) {
     .app { grid-template-columns: 1fr; }
@@ -77,7 +83,7 @@
   <aside id="side">
     <div class="side-head">
       <div class="brand">🧠 Memory Chat</div>
-      <div class="who"><span id="whoName"></span><button id="logout" title="Switch user">Switch</button></div>
+      <div class="who"><span id="whoName"></span><button id="logout" title="Sign out">Sign out</button></div>
       <select id="persona" title="Persona for new chats"></select>
       <button class="primary" id="newChat">+ New chat</button>
     </div>
@@ -100,17 +106,29 @@
 </div>
 
 <div id="login">
-  <form id="loginForm">
-    <strong>Welcome 👋</strong>
-    <span style="color:var(--muted);font-size:14px">Pick a username. Your chats and memory are stored per user on the server.</span>
-    <input id="username" placeholder="Username" maxlength="64" required pattern="[\w.\- ]+" autofocus>
-    <button class="primary" type="submit">Continue</button>
+  <form id="loginForm" novalidate>
+    <strong>Welcome to Memory Chat 👋</strong>
+    <div class="tabs">
+      <button type="button" id="tabLogin" class="on">Sign in</button>
+      <button type="button" id="tabRegister">Create account</button>
+    </div>
+    <label id="nameField" class="hidden">Name
+      <input id="name" autocomplete="name" maxlength="64" placeholder="Diya">
+    </label>
+    <label>Email
+      <input id="email" type="email" autocomplete="email" required placeholder="you@example.com">
+    </label>
+    <label>Password
+      <input id="password" type="password" autocomplete="current-password" required minlength="8" maxlength="72" placeholder="At least 8 characters">
+    </label>
+    <div id="authError" role="alert"></div>
+    <button class="primary" type="submit" id="authSubmit">Sign in</button>
   </form>
 </div>
 
 <script>
 const $ = (id) => document.getElementById(id);
-const state = { user: null, sessions: [], current: null, busy: false };
+const state = { user: null, token: null, sessions: [], current: null, busy: false };
 
 // ---------- storage (best effort) ----------
 const store = {
@@ -120,12 +138,25 @@ const store = {
 };
 
 // ---------- API ----------
+function errorText(body, fallback) {
+  const d = body.detail;
+  if (Array.isArray(d)) {  // FastAPI validation errors
+    return d.map((e) => {
+      const field = e.loc?.[e.loc.length - 1];
+      if (field === "password") return "Password must be 8–72 characters.";
+      if (field === "email") return "Please enter a valid email address.";
+      if (field === "name") return "Please enter your name.";
+      return e.msg;
+    }).join(" ");
+  }
+  return d || fallback;
+}
 async function api(path, opts = {}) {
   const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
-  if (state.user) headers["X-User-Id"] = state.user.id;
+  if (state.token) headers["Authorization"] = `Bearer ${state.token}`;
   const res = await fetch(path, { ...opts, headers });
-  if (res.status === 401) { logout(); throw new Error("Please sign in again"); }
-  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  if (res.status === 401 && state.token) { logout(); throw new Error("Your session expired. Please sign in again."); }
+  if (!res.ok) throw new Error(errorText(await res.json().catch(() => ({})), res.statusText));
   return res.status === 204 ? null : res.json();
 }
 
@@ -208,10 +239,11 @@ async function send(text) {
     bubble.classList.add("typing");
     const res = await fetch("/api/chat/stream", {
       method: "POST",
-      headers: { "Content-Type": "application/json", "X-User-Id": state.user.id },
+      headers: { "Content-Type": "application/json", "Authorization": `Bearer ${state.token}` },
       body: JSON.stringify({ session_id: state.current.id, message: text }),
     });
-    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    if (res.status === 401) { logout(); throw new Error("Your session expired. Please sign in again."); }
+    if (!res.ok) throw new Error(errorText(await res.json().catch(() => ({})), res.statusText));
     const reader = res.body.getReader();
     const decoder = new TextDecoder();
     let buf = "";
@@ -241,20 +273,38 @@ async function send(text) {
     await loadSessions(); // refresh auto-title / ordering
   }
 }
-async function login(username) {
-  state.user = await api("/api/users", { method: "POST", body: JSON.stringify({ username }) });
-  store.set("user", JSON.stringify(state.user));
+let authMode = "login";
+function setAuthMode(mode) {
+  authMode = mode;
+  const reg = mode === "register";
+  $("tabLogin").classList.toggle("on", !reg);
+  $("tabRegister").classList.toggle("on", reg);
+  $("nameField").classList.toggle("hidden", !reg);
+  $("authSubmit").textContent = reg ? "Create account" : "Sign in";
+  $("password").autocomplete = reg ? "new-password" : "current-password";
+  $("authError").textContent = "";
+  (reg ? $("name") : $("email")).focus();
+}
+async function authenticate() {
+  const email = $("email").value.trim(), password = $("password").value;
+  const body = authMode === "register" ? { name: $("name").value.trim(), email, password } : { email, password };
+  const res = await api(`/api/auth/${authMode}`, { method: "POST", body: JSON.stringify(body) });
+  state.token = res.access_token;
+  state.user = res.user;
+  store.set("token", state.token);
+  $("password").value = "";
   $("login").classList.remove("show");
   await boot();
 }
 function logout() {
-  state.user = null; state.current = null;
-  store.del("user"); store.del("sessionId");
+  state.user = null; state.token = null; state.current = null;
+  store.del("token"); store.del("sessionId");
   $("sessions").innerHTML = ""; $("log").innerHTML = "";
   $("login").classList.add("show");
 }
 async function boot() {
-  $("whoName").textContent = `Signed in as ${state.user.username}`;
+  $("whoName").textContent = `Signed in as ${state.user.name}`;
+  $("whoName").title = state.user.email;
   await loadSessions();
   const last = store.get("sessionId");
   if (last && state.sessions.some((s) => s.id === last)) await openSession(last);
@@ -282,7 +332,16 @@ $("clearBtn").onclick = async () => {
   await api(`/api/sessions/${state.current.id}/messages`, { method: "DELETE" });
   showEmpty();
 };
-$("loginForm").onsubmit = (e) => { e.preventDefault(); login($("username").value.trim()).catch((err) => alert(err.message)); };
+$("tabLogin").onclick = () => setAuthMode("login");
+$("tabRegister").onclick = () => setAuthMode("register");
+$("loginForm").onsubmit = async (e) => {
+  e.preventDefault();
+  $("authSubmit").disabled = true;
+  $("authError").textContent = "";
+  try { await authenticate(); }
+  catch (err) { $("authError").textContent = err.message; }
+  finally { $("authSubmit").disabled = false; }
+};
 
 function applyTheme(t) { document.documentElement.dataset.theme = t; store.set("theme", t); }
 $("themeBtn").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
@@ -291,12 +350,12 @@ applyTheme(store.get("theme") || (matchMedia("(prefers-color-scheme: dark)").mat
 (async () => {
   const personas = await api("/api/personas");
   $("persona").innerHTML = Object.keys(personas).map((p) => `<option value="${p}">Persona: ${p}</option>`).join("");
-  const saved = store.get("user");
-  if (saved) {
-    state.user = JSON.parse(saved);
-    try { await api("/api/users/me"); await boot(); } catch { logout(); }
+  state.token = store.get("token");
+  if (state.token) {
+    try { state.user = await api("/api/auth/me"); await boot(); } catch { logout(); }
   } else {
     $("login").classList.add("show");
+    $("email").focus();
   }
 })();
 </script>

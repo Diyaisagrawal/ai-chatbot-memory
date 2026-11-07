@@ -12,7 +12,7 @@ call never leaves a dangling user message without a reply in memory.
 from collections.abc import AsyncIterator
 from datetime import date
 
-from langchain_core.language_models import BaseChatModel
+from langchain_core.runnables import Runnable
 from langchain_core.messages import AIMessage, HumanMessage, trim_messages
 from langchain_core.output_parsers import StrOutputParser
 from sqlalchemy.orm import sessionmaker
@@ -22,7 +22,7 @@ from app.prompts import PERSONAS, chat_prompt
 
 
 class ChatService:
-    def __init__(self, llm: BaseChatModel, session_factory: sessionmaker, memory_window: int):
+    def __init__(self, llm: Runnable, session_factory: sessionmaker, memory_window: int):
         self.session_factory = session_factory
         self.chain = chat_prompt | llm | StrOutputParser()
         # Keep the last `memory_window` messages, always starting on a human turn

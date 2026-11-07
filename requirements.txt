@@ -7,3 +7,6 @@ sqlalchemy>=2.0
 pydantic>=2.7
 pydantic-settings>=2.3
 python-dotenv>=1.0
+pyjwt>=2.8
+bcrypt>=4.1
+email-validator>=2.1

@@ -4,23 +4,87 @@ from fastapi.testclient import TestClient
 
 from app.config import Settings
 from app.main import create_app
-from tests.conftest import make_session, make_user, say
+from tests.conftest import PASSWORD, make_session, make_user, say
 
 
 def test_health(client):
     assert client.get("/health").json() == {"status": "ok", "provider": "fake"}
 
 
-def test_user_signin_is_idempotent(client):
-    a = client.post("/api/users", json={"username": "diya"})
-    b = client.post("/api/users", json={"username": "diya"})
-    assert a.status_code == 201 and b.status_code == 200
-    assert a.json()["id"] == b.json()["id"]
+def test_register_login_me(client):
+    r = client.post(
+        "/api/auth/register",
+        json={"name": "Diya", "email": "Diya@Example.com", "password": PASSWORD},
+    )
+    assert r.status_code == 201
+    assert r.json()["user"]["email"] == "diya@example.com"  # normalised
+
+    r = client.post("/api/auth/login", json={"email": "diya@example.com", "password": PASSWORD})
+    assert r.status_code == 200
+    token = r.json()["access_token"]
+    me = client.get("/api/auth/me", headers={"Authorization": f"Bearer {token}"}).json()
+    assert me["name"] == "Diya" and "password_hash" not in me
 
 
-def test_requires_known_user(client):
-    assert client.get("/api/sessions").status_code == 422  # header missing
-    assert client.get("/api/sessions", headers={"X-User-Id": "nope"}).status_code == 401
+def test_duplicate_email_rejected(client):
+    make_user(client, "diya")
+    r = client.post(
+        "/api/auth/register",
+        json={"name": "Other", "email": "DIYA@example.com", "password": PASSWORD},
+    )
+    assert r.status_code == 409
+
+
+def test_wrong_password_and_unknown_email(client):
+    make_user(client, "diya")
+    bad = {"email": "diya@example.com", "password": "wrong-password"}
+    assert client.post("/api/auth/login", json=bad).status_code == 401
+    unknown = {"email": "nobody@example.com", "password": PASSWORD}
+    assert client.post("/api/auth/login", json=unknown).status_code == 401
+
+
+def test_registration_validation(client):
+    weak = {"name": "Diya", "email": "diya@example.com", "password": "short"}
+    assert client.post("/api/auth/register", json=weak).status_code == 422
+    bad_email = {"name": "Diya", "email": "not-an-email", "password": PASSWORD}
+    assert client.post("/api/auth/register", json=bad_email).status_code == 422
+
+
+def test_password_is_hashed(client):
+    make_user(client, "diya")
+    from app.db import User
+
+    with client.app.state.db.SessionLocal() as db:
+        stored = db.query(User).one().password_hash
+    assert stored != PASSWORD and stored.startswith("$2")
+
+
+def test_requires_valid_token(client):
+    assert client.get("/api/sessions").status_code == 401
+    assert client.get("/api/sessions", headers={"Authorization": "Bearer garbage"}).status_code == 401
+
+
+def test_expired_token_rejected(client):
+    from app.security import TokenService
+
+    h = make_user(client, "diya")
+    user_id = client.get("/api/auth/me", headers=h).json()["id"]
+    expired = TokenService(client.app.state.tokens.secret, ttl_hours=-1).create(user_id)
+    assert client.get("/api/sessions", headers={"Authorization": f"Bearer {expired}"}).status_code == 401
+
+
+def test_legacy_v1_database_is_backed_up(tmp_path):
+    import sqlite3
+
+    db_path = tmp_path / "old.db"
+    con = sqlite3.connect(db_path)
+    con.execute("CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT UNIQUE, created_at TEXT)")
+    con.commit()
+    con.close()
+    s = Settings(database_url=f"sqlite:///{db_path}", llm_provider="fake", jwt_secret="x" * 40)
+    with TestClient(create_app(s)) as c:
+        make_user(c, "diya")
+    assert (tmp_path / "old.v1-backup.db").exists()
 
 
 def test_multi_turn_memory(client):
@@ -173,3 +237,49 @@ def test_failed_llm_call_does_not_corrupt_memory(client):
 
     # Only the successful turn is stored -- no orphaned human message.
     assert len(client.get(f"/api/sessions/{sid}/messages", headers=h).json()) == 2
+
+
+def test_model_fallback_chain():
+    from langchain_core.language_models.fake_chat_models import FakeListChatModel
+    from langchain_core.runnables import RunnableLambda
+
+    def unavailable(_):
+        raise RuntimeError("The requested model is not supported by any provider you have enabled.")
+
+    llm = RunnableLambda(unavailable).with_fallbacks([FakeListChatModel(responses=["from fallback"])])
+    assert llm.invoke("hi").content == "from fallback"
+
+
+def test_model_list_parsing():
+    s = Settings(hf_model_id=" a/one , b/two,,c/three ")
+    assert s.hf_model_ids == ["a/one", "b/two", "c/three"]
+
+
+def test_friendly_error_for_unsupported_model():
+    from app.api.routes import llm_error_message
+
+    msg = llm_error_message(RuntimeError("Bad request: model_not_supported"))
+    assert "HF_MODEL_ID" in msg and "inference-providers" in msg
+
+
+def test_streaming_falls_back_to_next_model(settings):
+    from app.llm.fake import EchoMemoryChatModel
+    from langchain_core.runnables import RunnableLambda
+
+    def unavailable(_):
+        raise RuntimeError("model_not_supported")
+
+    with TestClient(create_app(settings)) as c:
+        service = c.app.state.chat_service
+        from app.prompts import chat_prompt
+        from langchain_core.output_parsers import StrOutputParser
+
+        llm = RunnableLambda(unavailable).with_fallbacks([EchoMemoryChatModel()])
+        service.chain = chat_prompt | llm | StrOutputParser()
+
+        h = make_user(c, "diya")
+        sid = make_session(c, h)
+        with c.stream("POST", "/api/chat/stream", json={"session_id": sid, "message": "hi"}, headers=h) as r:
+            events = [json.loads(l[6:]) for l in r.iter_lines() if l.startswith("data: ")]
+        assert events[-1] == {"done": True}
+        assert "".join(e.get("token", "") for e in events).startswith('You said: "hi"')

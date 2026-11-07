@@ -1,12 +1,16 @@
-"""FastAPI dependencies: DB session, current user, chat service, session ownership."""
+"""FastAPI dependencies: DB session, authenticated user, chat service, session ownership."""
 
 from collections.abc import Iterator
 
-from fastapi import Depends, Header, HTTPException, Request, status
+from fastapi import Depends, HTTPException, Request, status
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session as DBSession
 
 from app.chain import ChatService
 from app.db import ChatSession, User
+from app.security import TokenService
+
+bearer = HTTPBearer(auto_error=False, description="Token from /api/auth/login or /api/auth/register")
 
 
 def get_db(request: Request) -> Iterator[DBSession]:
@@ -17,13 +21,26 @@ def get_chat_service(request: Request) -> ChatService:
     return request.app.state.chat_service
 
 
+def get_token_service(request: Request) -> TokenService:
+    return request.app.state.tokens
+
+
 def get_current_user(
-    x_user_id: str = Header(..., description="ID returned by POST /api/users"),
+    creds: HTTPAuthorizationCredentials | None = Depends(bearer),
+    tokens: TokenService = Depends(get_token_service),
     db: DBSession = Depends(get_db),
 ) -> User:
-    user = db.get(User, x_user_id)
+    unauthorized = HTTPException(
+        status.HTTP_401_UNAUTHORIZED,
+        "Not signed in or session expired",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
+    if creds is None:
+        raise unauthorized
+    user_id = tokens.user_id_from(creds.credentials)
+    user = db.get(User, user_id) if user_id else None
     if user is None:
-        raise HTTPException(status.HTTP_401_UNAUTHORIZED, "Unknown user. Create one via POST /api/users.")
+        raise unauthorized
     return user
 
 
