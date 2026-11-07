@@ -1,0 +1,304 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Memory Chat</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧠</text></svg>">
+<style>
+  :root {
+    --bg: #f7f7f8; --panel: #ffffff; --side: #eef0f3; --text: #1d1f23; --muted: #6b7280;
+    --border: #dfe2e6; --accent: #4f46e5; --accent-text: #fff; --user: #4f46e5; --bot: #ffffff;
+    --code: #f1f3f5;
+  }
+  [data-theme="dark"] {
+    --bg: #15161a; --panel: #1d1f24; --side: #111215; --text: #e6e7ea; --muted: #9aa0a9;
+    --border: #2c2f36; --accent: #818cf8; --accent-text: #0f1015; --user: #4f46e5; --bot: #23262c;
+    --code: #2a2d34;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body { font: 15px/1.5 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; background: var(--bg); color: var(--text); }
+  button, select, input, textarea { font: inherit; color: inherit; }
+  select { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 6px 8px; }
+  button { cursor: pointer; border: 1px solid var(--border); background: var(--panel); border-radius: 8px; padding: 6px 10px; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  button:disabled { opacity: .5; cursor: default; }
+
+  .app { display: grid; grid-template-columns: 270px 1fr; height: 100%; }
+  aside { background: var(--side); border-right: 1px solid var(--border); display: flex; flex-direction: column; min-height: 0; }
+  .side-head { padding: 14px; display: flex; flex-direction: column; gap: 8px; border-bottom: 1px solid var(--border); }
+  .brand { font-weight: 650; }
+  .who { color: var(--muted); font-size: 13px; display: flex; justify-content: space-between; align-items: center; }
+  .who button { padding: 2px 8px; font-size: 12px; }
+  #sessions { list-style: none; margin: 0; padding: 8px; overflow-y: auto; flex: 1; }
+  #sessions li { display: flex; align-items: center; gap: 6px; padding: 8px 10px; border-radius: 8px; cursor: pointer; }
+  #sessions li:hover { background: var(--panel); }
+  #sessions li.active { background: var(--panel); outline: 1px solid var(--border); }
+  #sessions .t { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #sessions .p { font-size: 11px; color: var(--muted); }
+  #sessions .del { border: 0; background: none; color: var(--muted); padding: 0 4px; visibility: hidden; }
+  #sessions li:hover .del { visibility: visible; }
+
+  main { display: flex; flex-direction: column; min-height: 0; }
+  header { display: flex; gap: 8px; align-items: center; padding: 10px 16px; border-bottom: 1px solid var(--border); background: var(--panel); }
+  header .title { font-weight: 600; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #menuBtn { display: none; }
+  #log { flex: 1; overflow-y: auto; padding: 20px 16px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: min(760px, 85%); padding: 10px 14px; border-radius: 14px; white-space: pre-wrap; word-wrap: break-word; }
+  .msg.human { align-self: flex-end; background: var(--user); color: #fff; border-bottom-right-radius: 4px; }
+  .msg.ai { align-self: flex-start; background: var(--bot); border: 1px solid var(--border); border-bottom-left-radius: 4px; }
+  .msg.err { align-self: center; color: #dc2626; background: none; font-size: 13px; }
+  .msg pre { background: var(--code); padding: 10px; border-radius: 8px; overflow-x: auto; white-space: pre; margin: 6px 0; }
+  .msg code { background: var(--code); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+  .msg pre code { background: none; padding: 0; }
+  .empty { margin: auto; text-align: center; color: var(--muted); max-width: 420px; }
+  .typing::after { content: "▍"; animation: blink 1s steps(1) infinite; }
+  @keyframes blink { 50% { opacity: 0; } }
+
+  form#composer { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); }
+  #input { flex: 1; resize: none; border: 1px solid var(--border); border-radius: 10px; padding: 10px; background: var(--bg); max-height: 180px; }
+
+  #login { position: fixed; inset: 0; background: rgba(0,0,0,.45); display: none; align-items: center; justify-content: center; padding: 16px; }
+  #login.show { display: flex; }
+  #login form { background: var(--panel); padding: 24px; border-radius: 14px; width: 100%; max-width: 360px; display: flex; flex-direction: column; gap: 12px; }
+  #login input { border: 1px solid var(--border); border-radius: 8px; padding: 10px; background: var(--bg); }
+
+  @media (max-width: 760px) {
+    .app { grid-template-columns: 1fr; }
+    aside { position: fixed; inset: 0 30% 0 0; z-index: 5; transform: translateX(-100%); transition: transform .2s; }
+    aside.open { transform: none; }
+    #menuBtn { display: inline-block; }
+  }
+</style>
+</head>
+<body>
+<div class="app">
+  <aside id="side">
+    <div class="side-head">
+      <div class="brand">🧠 Memory Chat</div>
+      <div class="who"><span id="whoName"></span><button id="logout" title="Switch user">Switch</button></div>
+      <select id="persona" title="Persona for new chats"></select>
+      <button class="primary" id="newChat">+ New chat</button>
+    </div>
+    <ul id="sessions"></ul>
+  </aside>
+
+  <main>
+    <header>
+      <button id="menuBtn" aria-label="Sessions">☰</button>
+      <span class="title" id="chatTitle">New chat</span>
+      <button id="clearBtn" title="Clear this chat's memory">Clear memory</button>
+      <button id="themeBtn" aria-label="Toggle theme" title="Toggle theme">🌓</button>
+    </header>
+    <div id="log"></div>
+    <form id="composer">
+      <textarea id="input" rows="1" placeholder="Message…" title="Enter to send, Shift+Enter for a new line"></textarea>
+      <button class="primary" id="sendBtn" type="submit">Send</button>
+    </form>
+  </main>
+</div>
+
+<div id="login">
+  <form id="loginForm">
+    <strong>Welcome 👋</strong>
+    <span style="color:var(--muted);font-size:14px">Pick a username. Your chats and memory are stored per user on the server.</span>
+    <input id="username" placeholder="Username" maxlength="64" required pattern="[\w.\- ]+" autofocus>
+    <button class="primary" type="submit">Continue</button>
+  </form>
+</div>
+
+<script>
+const $ = (id) => document.getElementById(id);
+const state = { user: null, sessions: [], current: null, busy: false };
+
+// ---------- storage (best effort) ----------
+const store = {
+  get(k) { try { return localStorage.getItem(k); } catch { return null; } },
+  set(k, v) { try { localStorage.setItem(k, v); } catch {} },
+  del(k) { try { localStorage.removeItem(k); } catch {} },
+};
+
+// ---------- API ----------
+async function api(path, opts = {}) {
+  const headers = { "Content-Type": "application/json", ...(opts.headers || {}) };
+  if (state.user) headers["X-User-Id"] = state.user.id;
+  const res = await fetch(path, { ...opts, headers });
+  if (res.status === 401) { logout(); throw new Error("Please sign in again"); }
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+  return res.status === 204 ? null : res.json();
+}
+
+// ---------- rendering ----------
+function escapeHtml(s) {
+  return s.replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+}
+function renderMarkdownLite(text) {
+  // Escape first, then add code blocks / inline code / bold. Safe against HTML injection.
+  let html = escapeHtml(text);
+  html = html.replace(/```(\w*)\n?([\s\S]*?)```/g, (_, _lang, code) => `<pre><code>${code}</code></pre>`);
+  html = html.replace(/`([^`\n]+)`/g, "<code>$1</code>");
+  html = html.replace(/\*\*([^*\n]+)\*\*/g, "<strong>$1</strong>");
+  return html;
+}
+function addMessage(role, text) {
+  const empty = $("log").querySelector(".empty");
+  if (empty) empty.remove();
+  const div = document.createElement("div");
+  div.className = `msg ${role}`;
+  div.innerHTML = role === "ai" ? renderMarkdownLite(text) : escapeHtml(text);
+  $("log").appendChild(div);
+  $("log").scrollTop = $("log").scrollHeight;
+  return div;
+}
+function showEmpty() {
+  const persona = state.current?.persona || $("persona").value;
+  $("log").innerHTML = `<div class="empty"><h3>Start a conversation</h3>
+    <p>Persona: <b>${escapeHtml(persona)}</b>. Tell me something about yourself, then ask about it later. I'll remember it within this chat, even after a restart.</p></div>`;
+}
+function renderSessions() {
+  const ul = $("sessions");
+  ul.innerHTML = "";
+  for (const s of state.sessions) {
+    const li = document.createElement("li");
+    li.className = s.id === state.current?.id ? "active" : "";
+    li.innerHTML = `<span class="t">${escapeHtml(s.title)}</span><span class="p">${escapeHtml(s.persona)}</span><button class="del" title="Delete">✕</button>`;
+    li.onclick = () => openSession(s.id);
+    li.querySelector(".del").onclick = async (e) => {
+      e.stopPropagation();
+      if (!confirm(`Delete "${s.title}"?`)) return;
+      await api(`/api/sessions/${s.id}`, { method: "DELETE" });
+      if (state.current?.id === s.id) state.current = null;
+      await loadSessions();
+      if (!state.current) state.sessions.length ? openSession(state.sessions[0].id) : newChat();
+    };
+    ul.appendChild(li);
+  }
+  $("chatTitle").textContent = state.current?.title || "New chat";
+}
+
+// ---------- actions ----------
+async function loadSessions() {
+  state.sessions = await api("/api/sessions");
+  if (state.current) state.current = state.sessions.find((s) => s.id === state.current.id) || null;
+  renderSessions();
+}
+async function openSession(id) {
+  state.current = state.sessions.find((s) => s.id === id);
+  store.set("sessionId", id);
+  renderSessions();
+  $("side").classList.remove("open");
+  const msgs = await api(`/api/sessions/${id}/messages`);
+  $("log").innerHTML = "";
+  msgs.length ? msgs.forEach((m) => addMessage(m.role, m.content)) : showEmpty();
+  $("input").focus();
+}
+async function newChat() {
+  const s = await api("/api/sessions", { method: "POST", body: JSON.stringify({ persona: $("persona").value }) });
+  await loadSessions();
+  await openSession(s.id);
+}
+async function send(text) {
+  state.busy = true; $("sendBtn").disabled = true;
+  let bubble = null, full = "";
+  try {
+    if (!state.current) await newChat();
+    addMessage("human", text);
+    bubble = addMessage("ai", "");
+    bubble.classList.add("typing");
+    const res = await fetch("/api/chat/stream", {
+      method: "POST",
+      headers: { "Content-Type": "application/json", "X-User-Id": state.user.id },
+      body: JSON.stringify({ session_id: state.current.id, message: text }),
+    });
+    if (!res.ok) throw new Error((await res.json().catch(() => ({}))).detail || res.statusText);
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    let buf = "";
+    while (true) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      buf += decoder.decode(value, { stream: true });
+      const events = buf.split("\n\n");
+      buf = events.pop();
+      for (const ev of events) {
+        if (!ev.startsWith("data: ")) continue;
+        const data = JSON.parse(ev.slice(6));
+        if (data.error) throw new Error(data.error);
+        if (data.token) {
+          full += data.token;
+          bubble.innerHTML = renderMarkdownLite(full);
+          $("log").scrollTop = $("log").scrollHeight;
+        }
+      }
+    }
+  } catch (err) {
+    if (bubble && !full) bubble.remove();
+    addMessage("err", `⚠ ${err.message}`);
+  } finally {
+    bubble?.classList.remove("typing");
+    state.busy = false; $("sendBtn").disabled = false;
+    await loadSessions(); // refresh auto-title / ordering
+  }
+}
+async function login(username) {
+  state.user = await api("/api/users", { method: "POST", body: JSON.stringify({ username }) });
+  store.set("user", JSON.stringify(state.user));
+  $("login").classList.remove("show");
+  await boot();
+}
+function logout() {
+  state.user = null; state.current = null;
+  store.del("user"); store.del("sessionId");
+  $("sessions").innerHTML = ""; $("log").innerHTML = "";
+  $("login").classList.add("show");
+}
+async function boot() {
+  $("whoName").textContent = `Signed in as ${state.user.username}`;
+  await loadSessions();
+  const last = store.get("sessionId");
+  if (last && state.sessions.some((s) => s.id === last)) await openSession(last);
+  else if (state.sessions.length) await openSession(state.sessions[0].id);
+  else { state.current = null; renderSessions(); showEmpty(); }
+}
+
+// ---------- wiring ----------
+$("composer").onsubmit = (e) => {
+  e.preventDefault();
+  const text = $("input").value.trim();
+  if (!text || state.busy) return;
+  $("input").value = ""; $("input").style.height = "auto";
+  send(text);
+};
+$("input").addEventListener("keydown", (e) => {
+  if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); $("composer").requestSubmit(); }
+});
+$("input").addEventListener("input", (e) => { e.target.style.height = "auto"; e.target.style.height = e.target.scrollHeight + "px"; });
+$("newChat").onclick = newChat;
+$("logout").onclick = logout;
+$("menuBtn").onclick = () => $("side").classList.toggle("open");
+$("clearBtn").onclick = async () => {
+  if (!state.current || !confirm("Clear this chat's memory?")) return;
+  await api(`/api/sessions/${state.current.id}/messages`, { method: "DELETE" });
+  showEmpty();
+};
+$("loginForm").onsubmit = (e) => { e.preventDefault(); login($("username").value.trim()).catch((err) => alert(err.message)); };
+
+function applyTheme(t) { document.documentElement.dataset.theme = t; store.set("theme", t); }
+$("themeBtn").onclick = () => applyTheme(document.documentElement.dataset.theme === "dark" ? "light" : "dark");
+applyTheme(store.get("theme") || (matchMedia("(prefers-color-scheme: dark)").matches ? "dark" : "light"));
+
+(async () => {
+  const personas = await api("/api/personas");
+  $("persona").innerHTML = Object.keys(personas).map((p) => `<option value="${p}">Persona: ${p}</option>`).join("");
+  const saved = store.get("user");
+  if (saved) {
+    state.user = JSON.parse(saved);
+    try { await api("/api/users/me"); await boot(); } catch { logout(); }
+  } else {
+    $("login").classList.add("show");
+  }
+})();
+</script>
+</body>
+</html>

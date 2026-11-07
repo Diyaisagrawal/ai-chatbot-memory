@@ -5,9 +5,12 @@ venv/
 # Byte-compiled / cache
 __pycache__/
 *.py[cod]
+.pytest_cache/
 
-# dotenv
+# Secrets & local data
 .env
+*.db
+data/
 
 # IDE/editor files
 .vscode/

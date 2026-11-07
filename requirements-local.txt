@@ -1,0 +1,5 @@
+# Extra dependencies for LLM_PROVIDER=hf_local (runs the model on your machine)
+-r requirements.txt
+transformers>=4.45
+torch>=2.3
+accelerate>=0.33
